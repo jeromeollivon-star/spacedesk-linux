@@ -20,7 +20,9 @@ official Android client** over Wi‑Fi.
 ## Features
 
 - **Extended display**: shows a Windows PC's extended screen on any Linux device with a browser.
-- **Touch / mouse input**: tap and drag on the Linux screen control the Windows cursor.
+- **Two input modes**: *absolute* touch (tap where you want to click) and a *trackpad*
+  mode (drag = relative cursor, tap = left click, two-finger tap = right click, two-finger
+  drag = scroll). Toggle with the on-screen button.
 - **Fullscreen** with an on-screen toggle button.
 - **Auto-reconnect** watchdog: if the driver drops the connection, it re-establishes in <1 s.
 - **On-demand**: only connects to the driver while a viewer is open (no ghost display left behind).
@@ -115,8 +117,6 @@ Without it you get ~1 s of latency per frame.
 ## Limitations
 
 - Latency is that of spacedesk itself over Wi‑Fi (a wired/USB-Ethernet link helps a lot).
-- Touch is *absolute* — pointing at small Windows targets on a small screen can be fiddly
-  (a relative "trackpad" mode is a planned improvement).
 - Reverse-engineered and unofficial; not affiliated with or endorsed by spacedesk / Datronicsoft.
 
 ## License

@@ -388,13 +388,37 @@ def build_touch(x, y, phase):
     return bytes(p)
 
 
-def build_mouse(x, y, phase):
+# MouseEvents (drapeaux ecrits en POSITION_BUTTON_FLAGS = offset 20 ; off24 = 0)
+ME_MOVE = 1
+ME_LEFTDOWN = 2
+ME_LEFTUP = 4
+ME_RIGHTDOWN = 8
+ME_RIGHTUP = 16
+ME_WHEEL = 2048
+
+
+def build_mouse_move(dx, dy):
+    # mouvement RELATIF (pas de flag Absolute) : ideal pour un pave tactile.
     p = bytearray(HEADER_LEN)
     struct.pack_into("<I", p, 0, T_MOUSE)
-    struct.pack_into("<i", p, 8, int(x))
-    struct.pack_into("<i", p, 12, int(y))
-    struct.pack_into("<i", p, 16, 0)
-    struct.pack_into("<I", p, 20, 0x01)
+    struct.pack_into("<i", p, 8, int(dx))
+    struct.pack_into("<i", p, 12, int(dy))
+    struct.pack_into("<I", p, 20, ME_MOVE)
+    return bytes(p)
+
+
+def build_mouse_button(flag):
+    p = bytearray(HEADER_LEN)
+    struct.pack_into("<I", p, 0, T_MOUSE)
+    struct.pack_into("<I", p, 20, flag)
+    return bytes(p)
+
+
+def build_mouse_wheel(delta):
+    p = bytearray(HEADER_LEN)
+    struct.pack_into("<I", p, 0, T_MOUSE)
+    struct.pack_into("<i", p, 16, int(delta))
+    struct.pack_into("<I", p, 20, ME_WHEEL)
     return bytes(p)
 
 
@@ -529,18 +553,20 @@ VIEWER_HTML = """<!DOCTYPE html>
      touch-action:none;user-select:none;-webkit-user-select:none;display:block;
      image-rendering:auto;}
   html,body,#c,#wrap{cursor:none;}
-  /* bouton overlay bien visible, hors flux -> ne decale RIEN */
-  #fs{position:fixed;top:8px;left:8px;z-index:2147483647;width:42px;height:42px;
+  /* boutons overlay bien visibles, hors flux -> ne decalent RIEN */
+  #fs,#mode{position:fixed;top:8px;z-index:2147483647;width:42px;height:42px;
       border:2px solid rgba(255,255,255,0.92);border-radius:9px;
       background:rgba(0,0,0,0.62);color:#fff;font-size:22px;line-height:38px;
       text-align:center;cursor:pointer;padding:0;opacity:1;
       box-shadow:0 2px 8px rgba(0,0,0,.5);-webkit-tap-highlight-color:transparent;}
-  #fs:active{background:rgba(0,0,0,0.85);}
+  #fs{left:8px;} #mode{left:58px;}
+  #fs:active,#mode:active{background:rgba(0,0,0,0.85);}
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="c" width="1920" height="1080"></canvas></div>
 <button id="fs" title="Plein ecran">&#9906;</button>
+<button id="mode" title="Mode pave tactile">&#128433;</button>
 <script>
 (function(){
   var canvas=document.getElementById('c');
@@ -641,34 +667,67 @@ VIEWER_HTML = """<!DOCTYPE html>
     return {x:x,y:y};
   }
 
-  var lastSend=0, MIN_MS=33, pending=null, raf=false;
   function post(obj){ try{ fetch('/input',{method:'POST',body:JSON.stringify(obj),keepalive:true}); }catch(e){} }
-  function sendMove(x,y){
-    pending={t:'touch',s:'move',x:x,y:y};
-    if(!raf){ raf=true; requestAnimationFrame(function(){
-      raf=false; var now=Date.now();
-      if(pending&&now-lastSend>=MIN_MS){ lastSend=now; post(pending); pending=null; }
-      else if(pending){ sendMove(pending.x,pending.y); }
+
+  // ---- Bascule pave tactile (relatif) <-> absolu ----
+  var PAD=true;
+  var modeBtn=document.getElementById('mode');
+  function updateModeBtn(){
+    modeBtn.innerHTML=PAD?'&#128433;':'&#128070;';
+    modeBtn.title=PAD?'Pave tactile : glisser = curseur, tap = clic, 2 doigts = clic droit/scroll. Toucher pour passer en absolu'
+                     :'Absolu : toucher = position exacte. Toucher pour repasser en pave tactile';
+  }
+  modeBtn.addEventListener('click',function(e){ e.preventDefault(); e.stopPropagation(); PAD=!PAD; updateModeBtn(); });
+  updateModeBtn();
+
+  // mode absolu : throttle des move
+  var lastSend=0, MIN_MS=33, pendingAbs=null, absRAF=false;
+  function sendMoveAbs(x,y){
+    pendingAbs={x:x,y:y};
+    if(!absRAF){ absRAF=true; requestAnimationFrame(function(){
+      absRAF=false; var now=Date.now();
+      if(pendingAbs&&now-lastSend>=MIN_MS){ lastSend=now; post({t:'touch',s:'move',x:pendingAbs.x,y:pendingAbs.y}); pendingAbs=null; }
+      else if(pendingAbs){ sendMoveAbs(pendingAbs.x,pendingAbs.y); }
     }); }
   }
+  // mode pave : accumulation des deltas via rAF
+  var accDX=0, accDY=0, padRAF=false;
+  function flushPad(){ padRAF=false; if(accDX||accDY){ post({t:'pad',dx:accDX,dy:accDY}); accDX=0; accDY=0; } }
+  function queuePad(dx,dy){ accDX+=dx; accDY+=dy; if(!padRAF){ padRAF=true; requestAnimationFrame(flushPad); } }
+
+  var SENS=1.6;
+  var pX=0,pY=0,sT=0,moved=0,nTouch=1;
 
   canvas.addEventListener('touchstart',function(e){ e.preventDefault();
-    var t=e.changedTouches[0]; var c=mapCoords(t.clientX,t.clientY);
-    post({t:'touch',s:'down',x:c.x,y:c.y}); },{passive:false});
+    var t=e.changedTouches[0]; nTouch=e.touches.length;
+    pX=t.clientX; pY=t.clientY; sT=Date.now(); moved=0;
+    if(!PAD){ var c=mapCoords(t.clientX,t.clientY); post({t:'touch',s:'down',x:c.x,y:c.y}); }
+  },{passive:false});
   canvas.addEventListener('touchmove',function(e){ e.preventDefault();
-    var t=e.changedTouches[0]; var c=mapCoords(t.clientX,t.clientY);
-    sendMove(c.x,c.y); },{passive:false});
+    var t=e.changedTouches[0];
+    var dx=t.clientX-pX, dy=t.clientY-pY; pX=t.clientX; pY=t.clientY;
+    moved+=Math.abs(dx)+Math.abs(dy);
+    if(PAD){
+      if(e.touches.length>=2){ if(Math.abs(dy)>=1) post({t:'scroll',d:(dy<0?1:-1)*Math.max(1,Math.round(Math.abs(dy)))}); }
+      else queuePad(Math.round(dx*SENS), Math.round(dy*SENS));
+    } else { var c=mapCoords(t.clientX,t.clientY); sendMoveAbs(c.x,c.y); }
+  },{passive:false});
   canvas.addEventListener('touchend',function(e){ e.preventDefault();
-    var t=e.changedTouches[0]; var c=mapCoords(t.clientX,t.clientY);
-    post({t:'touch',s:'up',x:c.x,y:c.y}); },{passive:false});
+    var dt=Date.now()-sT;
+    if(PAD){ if(moved<14 && dt<320) post({t:'click',btn: nTouch>=2?'right':'left'}); }
+    else { var t=e.changedTouches[0]; var c=mapCoords(t.clientX,t.clientY); post({t:'touch',s:'up',x:c.x,y:c.y}); }
+  },{passive:false});
 
+  // souris physique (optionnel) : pave = deltas bouton enfonce ; absolu = position
   var mdown=false;
-  canvas.addEventListener('mousedown',function(e){ e.preventDefault(); mdown=true;
-    var c=mapCoords(e.clientX,e.clientY); post({t:'touch',s:'down',x:c.x,y:c.y}); });
+  canvas.addEventListener('mousedown',function(e){ e.preventDefault(); mdown=true; pX=e.clientX; pY=e.clientY; moved=0; sT=Date.now();
+    if(!PAD){ var c=mapCoords(e.clientX,e.clientY); post({t:'touch',s:'down',x:c.x,y:c.y}); } });
   canvas.addEventListener('mousemove',function(e){ if(!mdown)return;
-    var c=mapCoords(e.clientX,e.clientY); sendMove(c.x,c.y); });
+    if(PAD){ var dx=e.clientX-pX, dy=e.clientY-pY; pX=e.clientX; pY=e.clientY; moved+=Math.abs(dx)+Math.abs(dy); queuePad(Math.round(dx*SENS),Math.round(dy*SENS)); }
+    else { var c=mapCoords(e.clientX,e.clientY); sendMoveAbs(c.x,c.y); } });
   window.addEventListener('mouseup',function(e){ if(!mdown)return; mdown=false;
-    var c=mapCoords(e.clientX,e.clientY); post({t:'touch',s:'up',x:c.x,y:c.y}); });
+    if(PAD){ if(moved<6 && Date.now()-sT<320) post({t:'click',btn:'left'}); }
+    else { var c=mapCoords(e.clientX,e.clientY); post({t:'touch',s:'up',x:c.x,y:c.y}); } });
 })();
 </script>
 </body>
@@ -808,10 +867,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400)
             return
         t = data.get("t")
-        if t == "touch":
+        if t == "touch":                                   # mode absolu : position exacte
             send_packet(build_touch(data.get("x", 0), data.get("y", 0), data.get("s", "move")))
-        elif t == "mouse":
-            send_packet(build_mouse(data.get("x", 0), data.get("y", 0), data.get("s", "move")))
+        elif t == "pad":                                   # mode trackpad : deplacement relatif
+            send_packet(build_mouse_move(data.get("dx", 0), data.get("dy", 0)))
+        elif t == "click":
+            if data.get("btn") == "right":
+                send_packet(build_mouse_button(ME_RIGHTDOWN))
+                send_packet(build_mouse_button(ME_RIGHTUP))
+            else:
+                send_packet(build_mouse_button(ME_LEFTDOWN))
+                send_packet(build_mouse_button(ME_LEFTUP))
+        elif t == "scroll":
+            send_packet(build_mouse_wheel(data.get("d", 0)))
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
