@@ -1,0 +1,20 @@
+[Unit]
+Description=spacedesk Linux client (reverse-engineered extended-display daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Point this at your Windows PC running the spacedesk driver:
+Environment=SPACEDESK_DRIVER=192.168.1.10
+# Optional tuning:
+#Environment=SPACEDESK_WIDTH=1280
+#Environment=SPACEDESK_HEIGHT=720
+#Environment=SPACEDESK_QUALITY=50
+#Environment=SPACEDESK_FPS=30
+ExecStart=/usr/bin/python3 /opt/spacedesk/spacedesk_client.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
